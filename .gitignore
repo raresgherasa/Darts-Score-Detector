@@ -1,0 +1,36 @@
+# Python and Environments
+__pycache__/
+*.pyc
+.venv/
+.env
+
+# IDEs and Tools
+.vscode/
+.idea/
+.claude/
+
+# Data and Annotations
+data/images/
+data/annotations/
+data/features.tsv
+
+# Training Dataset (re-download from Roboflow)
+yolov11 dataset/
+
+# YOLO cache files
+*.cache
+
+# Models and Training
+runs/
+models/
+*.pt
+*.onnx
+*.pth
+*.egg-info/
+
+# OS generated files
+.DS_Store
+Thumbs.db
+
+# Documentation
+shortCMDs.md

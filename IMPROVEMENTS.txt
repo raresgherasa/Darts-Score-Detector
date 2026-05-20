@@ -1,0 +1,125 @@
+DARTS SCORE DETECTOR — IMPROVEMENTS STATUS
+==========================================
+Last updated: 2026-05-20
+
+
+========== ARCHITECTURE CHANGE ==========
+
+[ACC-2] DNN classifier replaced with deterministic geometric scoring  [DONE]
+  Files: darts_score_detection_offline.py
+  Change: The 60-class score DNN was removed. Each dart is now scored by a
+          regulation-board lookup:
+            - ring radii in OuterBull-radius units (INNER_BULL_EDGE = 0.40,
+              OUTER_BULL_EDGE = 1.0, TRIPLE_INNER = 6.226, TRIPLE_OUTER = 6.730,
+              DOUBLE_INNER = 10.189, DOUBLE_OUTER = 10.692);
+            - 20-sector lookup walking clockwise from "20" at the top.
+  Effect: No more features.tsv → DNN → ONNX dependency. Score is interpretable,
+          reproducible, and requires no per-zone training labels.
+  Side effects (deleted): feature_creation.py, score_detection_training.py,
+          json_to_voc.py, models/dnn/, models/ssd/, data/features.tsv,
+          data/predefined_classes.txt, legacy/, __pycache__/, yolo26n.pt.
+
+
+========== APPLIED (inference path) ==========
+
+[BUG-3] VideoCapture handle leak                                       [DONE]
+  File:  darts_score_detection_offline.py (available-device probe)
+  Fix:   Explicit open / isOpened / release loop instead of a leaky generator.
+
+[ACC-1] Dart tip from segmentation polygon, not bbox center            [DONE]
+  Fix:   The dart tip is the polygon vertex farthest from the bull center.
+         A small red filled circle is drawn at the tip for visual feedback.
+
+[ACC-3] Bull-radius formula consistency                                [DONE]
+  Fix:   Bull radius is always taken from the YOLO bbox half-side
+         (max(bw, bh) / 2). This matches the OuterBull radius assumption baked
+         into the regulation ring constants.
+
+[ACC-6] Board-orientation handling                                     [DONE]
+  Fix:   New --angle-offset DEG CLI flag rotates the scoring frame so the "20"
+         sector aligns with the top of the image. Default 0.0 preserves
+         existing behavior.
+
+[ACC-8] Temporal smoothing across video frames                         [DONE]
+  Fix:   Per-dart IoU tracking with majority-vote labelling across frames.
+         Tracks expire after 30 unseen frames. Single-image input bypasses the
+         tracker.
+
+[ACC-9] Bull-center stabilization                                      [DONE]
+  Fix:   EMA on (cx, cy, r) updated only when bull conf > 0.6 AND the new
+         center is within 50 px of the previous EMA. Stale EMA is kept when
+         the bull is not detected.
+
+[ACC-10] Confidence indicator on uncertain darts                       [DONE]
+  Fix:   When the majority-vote track has < 60% agreement over ≥3 frames, the
+         label is rendered in orange with a trailing "?". (Replaces the old
+         softmax-margin check, since scoring is now deterministic per frame.)
+
+[ACC-12] NMS on overlapping dart detections                            [DONE]
+  Fix:   Greedy IoU > 0.5 NMS on the dart class before scoring, so a single
+         physical dart isn't double-labelled.
+
+[QA-4]   VideoWriter handles resolution changes                        [DONE]
+  Fix:   Stored (writer_w, writer_h); writer is released and re-created on
+         any frame-size change with a stderr warning.
+
+[INF-3] Startup model existence check                                  [DONE]
+  Fix:   pathlib check on --yolo-model before doing anything. Clear error
+         message pointing at yolo_training.py if missing.
+
+
+========== APPLIED (training path) ==========
+
+[TRN-2] YOLO --project nested-directory bug                            [DONE]
+  File:  yolo_training.py
+  Fix:   --project default changed from 'runs/segment' to 'runs'. YOLO prepends
+         'segment/' itself, so the output now lands at runs/segment/darts_yolo11
+         instead of the buggy runs/segment/runs/segment/darts_yolo11.
+
+
+========== APPLIED (project hygiene) ==========
+
+[QA-5]   test.py uses sys.executable                                   [DONE]
+  Fix:   subprocess.run([sys.executable, ...]) so the right venv interpreter
+         picks up ultralytics / numpy / cv2.
+
+[INF-1] requirements.txt                                               [DONE]
+  Content: ultralytics, opencv-python, numpy, pyyaml (DNN deps dropped since
+          the classifier was removed).
+
+[INF-2] .gitignore                                                     [DONE]
+  Additions: models/, *.pt, *.onnx, *.pth, *.egg-info/ (existing entries kept).
+
+[INF-4] Legacy Jetson script removed                                   [DONE]
+  Fix:   darts_score_detection.py (jetson.inference + SSD) deleted as part of
+         the broader cleanup. Reference to it removed from README.
+
+
+========== NO LONGER APPLICABLE ==========
+
+The DNN classifier and its data pipeline were removed (ACC-2), so the following
+issues from earlier passes are now N/A:
+
+  - BUG-1, BUG-2, TRN-1, TRN-3
+  - QA-1, QA-2, QA-3, QA-6, QA-7  (all in deleted scripts)
+  - ACC-5, ACC-7, ACC-11, ACC-13, ACC-14  (all DNN-feature-pipeline issues)
+
+Their reasoning is preserved in git history.
+
+
+========== STILL OPEN ==========
+
+[ACC-4] Perspective correction (homography to top-down view)
+  Status: Not implemented. Would require detecting 4+ known board landmarks
+          (e.g. the outer "20/3/11/6" beads or the double-ring extremities)
+          which the current 2-class YOLO model does not learn.
+  Impact: If the camera is not perpendicular to the board, foreshortening
+          biases distance — a dart on the far side of the board reads as
+          closer to the bull than it physically is, sometimes flipping the
+          predicted ring (single ↔ triple) near boundaries.
+  Path forward:
+    (a) Add ~4 new annotation classes for board landmarks and retrain YOLO,
+        then compute cv2.findHomography per frame and warp to a canonical
+        top-down view before scoring; or
+    (b) Mount the camera as close to perpendicular as possible and ignore
+        the residual error (often acceptable for casual play).
