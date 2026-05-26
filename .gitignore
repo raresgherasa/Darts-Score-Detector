@@ -1,4 +1,4 @@
-# Python and Environments
+/# Python and Environments
 __pycache__/
 *.pyc
 .venv/
@@ -16,17 +16,21 @@ data/features.tsv
 
 # Training Dataset (re-download from Roboflow)
 yolov11 dataset/
+yolov11_pose_dataset/
 
 # YOLO cache files
 *.cache
 
 # Models and Training
 runs/
-models/
 *.pt
 *.onnx
 *.pth
 *.egg-info/
+
+# Track trained model weights in the models directory
+!models/
+!models/**/*.pt
 
 # OS generated files
 .DS_Store
@@ -34,3 +38,15 @@ Thumbs.db
 
 # Documentation
 shortCMDs.md
+
+# Test Output Directories
+test_out/
+test_out_new/
+test_out_pose_new/
+
+# Ignore all data/test images globally
+*.jpg
+*.jpeg
+*.png
+*.bmp
+*.webp

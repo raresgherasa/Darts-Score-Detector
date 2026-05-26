@@ -94,7 +94,10 @@ def main():
                    help="Base model (yolo11n-seg.pt / yolo11s-seg.pt / yolo11m-seg.pt)")
     p.add_argument('--epochs', type=int, default=150)
     p.add_argument('--imgsz', type=int, default=640)
-    p.add_argument('--batch', type=int, default=16)
+    p.add_argument('--batch', type=int, default=4,
+                   help="Batch size — keep ≤4 for 4 GB VRAM (RTX 3050 Laptop)")
+    p.add_argument('--workers', type=int, default=4,
+                   help="DataLoader workers — high values waste RAM/CPU on laptops")
     p.add_argument('--device', default='',
                    help="'' = auto (GPU if available), '0' = first GPU, 'cpu' = force CPU")
     p.add_argument('--val-frac', type=float, default=0.15)
@@ -113,7 +116,7 @@ def main():
 
     # ── Read class names from the existing Roboflow data.yaml if present ─────
     existing_yaml = dataset_dir / 'data.yaml'
-    names = ['bulls', 'dart']  # fallback matches the current Roboflow export
+    names = ['arrow', 'board', 'bulls']  # fallback matches v2 Roboflow export
     if existing_yaml.is_file():
         with open(existing_yaml) as f:
             data = yaml.safe_load(f)
@@ -135,6 +138,7 @@ def main():
         imgsz=args.imgsz,
         batch=args.batch,
         device=args.device or None,
+        workers=args.workers,
         project=args.project,
         name=args.name,
         seed=args.seed,
