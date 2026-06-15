@@ -4,13 +4,12 @@ Usage:
   python test.py                        # random images — press any key for next, 'q' to quit
   python test.py --image path/to/img   # specific image
   python test.py --all                  # loop through every image in order, press any key to advance
-  python test.py --rings                # overlay the scoring rings for visual debugging
+  python test.py --no-rings             # hide the scoring-ring overlay (rings are shown by default)
 """
 
 import argparse
 import math
 import os
-import random
 import sys
 from pathlib import Path
 
@@ -18,7 +17,34 @@ import cv2
 import numpy as np
 from ultralytics import YOLO
 
-DRAW_RINGS = False  # toggled by --rings flag
+def smooth_polygon(poly, w, h, kernel_size=7):
+    """Smooth a pixelated polygon by drawing it, blurring, and extracting the contour."""
+    if len(poly) < 3:
+        return poly
+    # Bounding box of the polygon to keep mask size small
+    xs = poly[:, 0]
+    ys = poly[:, 1]
+    x1, y1 = max(0, int(np.min(xs)) - 5), max(0, int(np.min(ys)) - 5)
+    x2, y2 = min(w, int(np.max(xs)) + 5), min(h, int(np.max(ys)) + 5)
+    mw, mh = x2 - x1, y2 - y1
+    if mw <= 0 or mh <= 0:
+        return poly
+    mask = np.zeros((mh, mw), dtype=np.uint8)
+    shifted_poly = (poly - np.array([x1, y1])).astype(np.int32)
+    cv2.fillPoly(mask, [shifted_poly], 255)
+    
+    # Smooth using Gaussian blur
+    blurred = cv2.GaussianBlur(mask, (kernel_size, kernel_size), 0)
+    _, thresh = cv2.threshold(blurred, 127, 255, cv2.THRESH_BINARY)
+    contours, _ = cv2.findContours(thresh, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+    if contours:
+        best_contour = max(contours, key=cv2.contourArea)
+        smoothed = best_contour.reshape(-1, 2) + np.array([x1, y1])
+        return smoothed.astype(np.float32)
+    return poly
+
+
+DRAW_RINGS = True   # toggled by --no-rings flag
 
 # Import geometry helpers from the main detection script
 sys.path.insert(0, str(Path(__file__).parent))
@@ -27,10 +53,12 @@ from darts_score_detection_offline import (
     label_to_score,
     perspective_correct_vec,
     nms_indices,
-    dart_tip_from_endpoints,
+    dart_tip_tail_poly,
     refine_dart_tip,
+    resolve_class,
     BULL_TO_DOUBLE_OUTER,
     BULL_POLYGON_SCALE,
+    INNER_BULL_ANNOT_RADIUS,
     INNER_BULL_EDGE,
     OUTER_BULL_EDGE,
     TRIPLE_INNER,
@@ -111,18 +139,19 @@ DEFAULT_MODEL = 'models/yolo/best.pt'
 DEFAULT_CONF  = 0.35
 
 
-def detect_image(frame, yolo, yolo_pose, dart_cls, bull_cls, board_cls):
+def detect_image(frame, yolo, yolo_pose, dart_cls, bull_cls, board_cls, sector_20_cls=None, angle_offset_fallback=0.0, disable_auto_rotation=False, bull50_cls=None):
     """Run detection on a single BGR frame. Returns annotated frame and list of score labels."""
     h, w = frame.shape[:2]
     # Clean grayscale conversion at the very beginning to prevent overlay contamination
     gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
 
-    results = yolo(frame, conf=DEFAULT_CONF, verbose=False)[0]
+    results = yolo(frame, conf=DEFAULT_CONF, verbose=False, retina_masks=True)[0]
     seg_polys = results.masks.xy if (results.masks is not None and results.masks.xy is not None) else None
 
     results_pose = None
     if yolo_pose is not None:
-        results_pose = yolo_pose(frame, conf=DEFAULT_CONF, verbose=False)[0]
+        # Match the pose training resolution (960) for precise tip localisation.
+        results_pose = yolo_pose(frame, conf=DEFAULT_CONF, verbose=False, imgsz=960)[0]
 
     # ── Board FIRST — authoritative source for center, radius, perspective ──
     # Derive board geometry
@@ -138,6 +167,7 @@ def detect_image(frame, yolo, yolo_pose, dart_cls, bull_cls, board_cls):
         if best_board_idx >= 0 and best_board_conf > 0.5 and \
                 seg_polys is not None and len(seg_polys[best_board_idx]) >= 5:
             board_poly = seg_polys[best_board_idx].astype(np.float32)
+            board_poly = smooth_polygon(board_poly, w, h, kernel_size=15)
             board_poly_active = board_poly
             pts = board_poly.astype(np.int32)
             overlay = frame.copy()
@@ -146,8 +176,10 @@ def detect_image(frame, yolo, yolo_pose, dart_cls, bull_cls, board_cls):
             cv2.polylines(frame, [pts], True, (0, 200, 0), 2)
             try:
                 (ex, ey), (ax1, ax2), ea = cv2.fitEllipse(board_poly)
+                # `ea` from fitEllipse is the WIDTH-axis angle; make it the MAJOR-axis
+                # angle (rotate 90° when the height is the major axis).
                 major, minor = max(ax1, ax2) / 2.0, min(ax1, ax2) / 2.0
-                if ax1 > ax2:
+                if ax2 > ax1:
                     ea = (ea + 90.0) % 180.0
                 if minor > 10.0:
                     ema_ellipse = (ex, ey, major, minor, ea)
@@ -155,78 +187,264 @@ def detect_image(frame, yolo, yolo_pose, dart_cls, bull_cls, board_cls):
                 pass
 
     # ── Bull center & radius — board-derived when available ─────────────────
-    center_x, center_y, bull_radius = w / 2.0, h / 2.0, 19.0  # fallback
-
-    if ema_ellipse is not None:
-        # Authoritative: board ellipse derives everything
-        bex, bey, bmaj, _, _ = ema_ellipse
-        center_x, center_y = bex, bey
-        bull_radius = bmaj * BULL_TO_DOUBLE_OUTER
-
-    best_bull_idx, best_bull_conf = -1, 0.0
+    best_bull_idx = -1
+    best_bull_conf = 0.0
     for i, box in enumerate(results.boxes):
         if int(box.cls[0]) == bull_cls:
             conf = float(box.conf[0])
             if conf > best_bull_conf:
                 best_bull_conf, best_bull_idx = conf, i
 
+    best_bull50_idx = -1
+    best_bull50_conf = 0.0
+    if bull50_cls is not None:
+        for i, box in enumerate(results.boxes):
+            if int(box.cls[0]) == bull50_cls:
+                conf = float(box.conf[0])
+                if conf > best_bull50_conf:
+                    best_bull50_conf, best_bull50_idx = conf, i
+
+    best_twenty_idx = -1
+    best_twenty_conf = 0.0
+    if sector_20_cls is not None:
+        for i, box in enumerate(results.boxes):
+            if int(box.cls[0]) == sector_20_cls:
+                conf = float(box.conf[0])
+                if conf > best_twenty_conf:
+                    best_twenty_conf, best_twenty_idx = conf, i
+
+    # Estimates of center and radius
+    new_cx = new_cy = None
+    bull_direct_r = None
+    r_50_est = None
+    r_twenty_est = None
+
+    bull_cx = bull_cy = None
+    bull50_cx = bull50_cy = None
+    twenty_cx = twenty_cy = None
+    twenty_poly = None
+
+    # 1. 25-point circle (outer bull) processing
     if best_bull_idx >= 0:
         bx1, by1, bx2, by2 = results.boxes[best_bull_idx].xyxy[0].tolist()
-        poly = seg_polys[best_bull_idx] if (seg_polys is not None and len(seg_polys[best_bull_idx]) >= 3) else None
-        
-        if poly is not None:
-            pts = poly.astype(np.int32)
+        cv2.putText(frame, f'Bull25 {best_bull_conf:.2f}', (int(bx1), int(by1) - 6),
+                    cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 255, 0), 2)
+
+        bull_poly = None
+        if seg_polys is not None and len(seg_polys[best_bull_idx]) >= 3:
+            bull_poly = smooth_polygon(seg_polys[best_bull_idx].astype(np.float32), w, h, kernel_size=9)
+
+        if bull_poly is not None:
+            pts = bull_poly.astype(np.int32)
             overlay = frame.copy()
             cv2.fillPoly(overlay, [pts], (0, 255, 0))
             cv2.addWeighted(overlay, 0.4, frame, 0.6, 0, frame)
             cv2.polylines(frame, [pts], True, (0, 255, 0), 2)
-        cv2.putText(frame, f'Bull {best_bull_conf:.2f}', (int(bx1), int(by1) - 6),
-                    cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 255, 0), 2)
 
-        # Get bull center coordinates (high precision local center)
-        bull_cx = bull_cy = None
-        if poly is not None:
-            poly32 = poly.astype(np.float32)
-            M = cv2.moments(poly32)
-            if M['m00'] > 1e-3:
-                bull_cx = M['m10'] / M['m00']
-                bull_cy = M['m01'] / M['m00']
+            ibx1, iby1, ibx2, iby2 = int(bx1), int(by1), int(bx2), int(by2)
+            mw, mh = ibx2 - ibx1 + 1, iby2 - iby1 + 1
+            if mw > 0 and mh > 0:
+                mask = np.zeros((mh, mw), dtype=np.uint8)
+                shifted_poly = bull_poly - np.array([ibx1, iby1])
+                cv2.fillPoly(mask, [shifted_poly.astype(np.int32)], 255)
+                M = cv2.moments(mask)
+                if M['m00'] > 1e-3:
+                    bull_cx = ibx1 + M['m10'] / M['m00']
+                    bull_cy = iby1 + M['m01'] / M['m00']
         if bull_cx is None:
             bull_cx = (bx1 + bx2) / 2.0
             bull_cy = (by1 + by2) / 2.0
-            
-        center_x, center_y = bull_cx, bull_cy
 
-        if ema_ellipse is None:
-            # No board available — fall back to the bull polygon for radius
-            if poly is not None:
-                poly32 = poly.astype(np.float32)
-                if len(poly) >= 5:
-                    try:
-                        (ex, ey), (aw, ah), _ = cv2.fitEllipse(poly32)
-                        major_b = max(aw, ah) / 2.0
-                        minor_b = min(aw, ah) / 2.0
-                        # Reject contaminated polygons (darts crossing the bull): extreme aspect ratio
-                        if minor_b > 1.0 and major_b / minor_b < 2.0:
-                            bull_radius = major_b * BULL_POLYGON_SCALE   # major axis = true diameter
-                        else:
-                            bull_radius = (min(bx2 - bx1, by2 - by1) / 2.0) * BULL_POLYGON_SCALE
-                    except cv2.error:
-                        bull_radius = (min(bx2 - bx1, by2 - by1) / 2.0) * BULL_POLYGON_SCALE
-                else:
-                    bull_radius = (min(bx2 - bx1, by2 - by1) / 2.0) * BULL_POLYGON_SCALE
-            else:
-                bull_radius = (min(bx2 - bx1, by2 - by1) / 2.0) * BULL_POLYGON_SCALE
-                cv2.circle(frame, (int(center_x), int(center_y)), int(bull_radius), (0, 255, 0), 2)
+        if seg_polys is not None and len(seg_polys[best_bull_idx]) >= 5:
+            try:
+                poly = seg_polys[best_bull_idx].astype(np.float32)
+                (ex, ey), (aw, ah), _ = cv2.fitEllipse(poly)
+                major_b = max(aw, ah) / 2.0
+                minor_b = min(aw, ah) / 2.0
+                if minor_b > 1.0 and major_b / minor_b < 2.0:
+                    bull_direct_r = major_b * BULL_POLYGON_SCALE
+            except cv2.error:
+                pass
+        if bull_direct_r is None:
+            bull_direct_r = (min(bx2 - bx1, by2 - by1) / 2.0) * BULL_POLYGON_SCALE
 
-    # ── Angle offset from topmost board vertex cluster ──────────────────────
-    if board_poly_active is not None and ema_ellipse is not None:
-        n_top = max(3, len(board_poly_active) // 10)
-        top_indices = np.argsort(board_poly_active[:, 1])[:n_top]
-        raw_dx = float(np.mean(board_poly_active[top_indices, 0])) - center_x
-        raw_dy = float(np.mean(board_poly_active[top_indices, 1])) - center_y
+    # 2. 50-point circle (inner bull) processing
+    if best_bull50_idx >= 0:
+        b50_x1, b50_y1, b50_x2, b50_y2 = results.boxes[best_bull50_idx].xyxy[0].tolist()
+        cv2.putText(frame, f'Bull50 {best_bull50_conf:.2f}', (int(b50_x1), int(b50_y1) - 6),
+                    cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 200, 255), 2)
+
+        bull50_poly = None
+        if seg_polys is not None and len(seg_polys[best_bull50_idx]) >= 3:
+            bull50_poly = smooth_polygon(seg_polys[best_bull50_idx].astype(np.float32), w, h, kernel_size=9)
+
+        if bull50_poly is not None:
+            pts = bull50_poly.astype(np.int32)
+            overlay = frame.copy()
+            cv2.fillPoly(overlay, [pts], (0, 200, 255))
+            cv2.addWeighted(overlay, 0.4, frame, 0.6, 0, frame)
+            cv2.polylines(frame, [pts], True, (0, 200, 255), 2)
+
+            ib50_x1, ib50_y1, ib50_x2, ib50_y2 = int(b50_x1), int(b50_y1), int(b50_x2), int(b50_y2)
+            mw, mh = ib50_x2 - ib50_x1 + 1, ib50_y2 - ib50_y1 + 1
+            if mw > 0 and mh > 0:
+                mask = np.zeros((mh, mw), dtype=np.uint8)
+                shifted_poly = bull50_poly - np.array([ib50_x1, ib50_y1])
+                cv2.fillPoly(mask, [shifted_poly.astype(np.int32)], 255)
+                M = cv2.moments(mask)
+                if M['m00'] > 1e-3:
+                    bull50_cx = ib50_x1 + M['m10'] / M['m00']
+                    bull50_cy = ib50_y1 + M['m01'] / M['m00']
+        if bull50_cx is None:
+            bull50_cx = (b50_x1 + b50_x2) / 2.0
+            bull50_cy = (b50_y1 + b50_y2) / 2.0
+
+        if bull50_poly is not None and len(bull50_poly) >= 5:
+            try:
+                (ex, ey), (aw, ah), _ = cv2.fitEllipse(bull50_poly)
+                major_b = max(aw, ah) / 2.0
+                minor_b = min(aw, ah) / 2.0
+                if minor_b > 1.0 and major_b / minor_b < 2.0:
+                    r_50_est = major_b / INNER_BULL_ANNOT_RADIUS
+            except cv2.error:
+                pass
+        if r_50_est is None:
+            r_50_est = (min(b50_x2 - b50_x1, b50_y2 - b50_y1) / 2.0) / INNER_BULL_ANNOT_RADIUS
+
+    # 3. Twenty segment processing (Double 20)
+    if best_twenty_idx >= 0:
+        tw_x1, tw_y1, tw_x2, tw_y2 = results.boxes[best_twenty_idx].xyxy[0].tolist()
+        cv2.putText(frame, f'Twenty {best_twenty_conf:.2f}', (int(tw_x1), int(tw_y1) - 6),
+                    cv2.FONT_HERSHEY_SIMPLEX, 0.6, (255, 180, 0), 2)
+
+        twenty_poly = None
+        if seg_polys is not None and len(seg_polys[best_twenty_idx]) >= 3:
+            twenty_poly = smooth_polygon(seg_polys[best_twenty_idx].astype(np.float32), w, h, kernel_size=9)
+
+        if twenty_poly is not None:
+            pts = twenty_poly.astype(np.int32)
+            overlay = frame.copy()
+            cv2.fillPoly(overlay, [pts], (255, 180, 0))
+            cv2.addWeighted(overlay, 0.4, frame, 0.6, 0, frame)
+            cv2.polylines(frame, [pts], True, (255, 180, 0), 2)
+
+            itw_x1, itw_y1, itw_x2, itw_y2 = int(tw_x1), int(tw_y1), int(tw_x2), int(tw_y2)
+            mw, mh = itw_x2 - itw_x1 + 1, itw_y2 - itw_y1 + 1
+            if mw > 0 and mh > 0:
+                mask = np.zeros((mh, mw), dtype=np.uint8)
+                shifted_poly = twenty_poly - np.array([itw_x1, itw_y1])
+                cv2.fillPoly(mask, [shifted_poly.astype(np.int32)], 255)
+                M = cv2.moments(mask)
+                if M['m00'] > 1e-3:
+                    twenty_cx = itw_x1 + M['m10'] / M['m00']
+                    twenty_cy = itw_y1 + M['m01'] / M['m00']
+        if twenty_cx is None:
+            twenty_cx = (tw_x1 + tw_x2) / 2.0
+            twenty_cy = (tw_y1 + tw_y2) / 2.0
+
+    # Combine center coordinates using bullseye detections
+    local_bull_cx = local_bull_cy = None
+    if bull50_cx is not None and bull_cx is not None:
+        local_bull_cx = 0.6 * bull50_cx + 0.4 * bull_cx
+        local_bull_cy = 0.6 * bull50_cy + 0.4 * bull_cy
+    elif bull50_cx is not None:
+        local_bull_cx = bull50_cx
+        local_bull_cy = bull50_cy
+    elif bull_cx is not None:
+        local_bull_cx = bull_cx
+        local_bull_cy = bull_cy
+
+    # 4. Final center selection (with board symmetry fallback)
+    if ema_ellipse is not None and board_poly_active is not None and local_bull_cx is not None:
+        bex, bey, _, _, _ = ema_ellipse
+        min_x = np.min(board_poly_active[:, 0])
+        max_x = np.max(board_poly_active[:, 0])
+        board_sym_diff = abs((bex - min_x) - (max_x - bex))
+        bull_sym_diff = abs((local_bull_cx - min_x) - (max_x - local_bull_cx))
+
+        if board_sym_diff < 15.0 and bull_sym_diff > 20.0:
+            center_x, center_y = bex, bey
+        else:
+            center_x, center_y = local_bull_cx, local_bull_cy
+    elif local_bull_cx is not None:
+        center_x, center_y = local_bull_cx, local_bull_cy
+    elif ema_ellipse is not None:
+        bex, bey, _, _, _ = ema_ellipse
+        center_x, center_y = bex, bey
+    else:
+        center_x, center_y = w / 2.0, h / 2.0
+
+    # 5. Estimate scale from twenty segment polygon boundaries (if center is known).
+    # Each vertex's perspective-corrected distance from center is computed; the
+    # 95th-percentile anchors to DOUBLE_OUTER and the 5th-percentile to DOUBLE_INNER,
+    # giving a direct geometry-anchored estimate instead of a centroid approximation.
+    if twenty_poly is not None and center_x is not None and len(twenty_poly) >= 5:
+        dists = []
+        for pt in twenty_poly:
+            raw_dx = float(pt[0]) - center_x
+            raw_dy = float(pt[1]) - center_y
+            c_dx, c_dy = perspective_correct_vec(raw_dx, raw_dy, ema_ellipse)
+            dists.append(math.hypot(c_dx, c_dy))
+        dists_arr = np.array(dists)
+        r_from_outer = float(np.percentile(dists_arr, 95)) / DOUBLE_OUTER
+        r_from_inner = float(np.percentile(dists_arr, 5)) / DOUBLE_INNER
+        r_twenty_est = (r_from_outer + r_from_inner) / 2.0
+    elif twenty_cx is not None and center_x is not None:
+        raw_dx = twenty_cx - center_x
+        raw_dy = twenty_cy - center_y
         c_dx, c_dy = perspective_correct_vec(raw_dx, raw_dy, ema_ellipse)
-        angle_offset = math.degrees(math.atan2(c_dy, c_dx)) + 90.0
+        d_twenty = math.hypot(c_dx, c_dy)
+        DOUBLE_MID = (DOUBLE_INNER + DOUBLE_OUTER) / 2.0
+        r_twenty_est = d_twenty / DOUBLE_MID
+
+    # 6. Select scale based on preference hierarchy (independent of board annotation style when possible)
+    # Sanity-check r_twenty_est against the polygon estimate to reject outliers
+    # caused by a bad center or false twenty detection.
+    if r_twenty_est is not None:
+        ref = bull_direct_r if bull_direct_r is not None else (r_50_est if r_50_est is not None else None)
+        if ref is not None:
+            if not (0.6 * ref <= r_twenty_est <= 1.7 * ref):
+                r_twenty_est = None
+        elif not (8.0 <= r_twenty_est <= 60.0):
+            r_twenty_est = None
+
+    if r_twenty_est is not None:
+        bull_radius = r_twenty_est
+    elif bull_direct_r is not None:
+        bull_radius = bull_direct_r
+    elif r_50_est is not None:
+        bull_radius = r_50_est
+    elif ema_ellipse is not None:
+        bull_radius = ema_ellipse[2] * BULL_TO_DOUBLE_OUTER
+    else:
+        bull_radius = 19.0
+
+    # ── Angle offset calculation ─────────────────────────────────────────────
+    angle_offset = angle_offset_fallback
+    if not disable_auto_rotation:
+        sector_20_pos = None
+        if twenty_cx is not None:
+            sector_20_pos = (twenty_cx, twenty_cy)
+
+        if sector_20_pos is not None:
+            # 1. Class-derived auto-rotation
+            raw_dx = sector_20_pos[0] - center_x
+            raw_dy = sector_20_pos[1] - center_y
+            c_dx, c_dy = perspective_correct_vec(raw_dx, raw_dy, ema_ellipse)
+            angle_offset = math.degrees(math.atan2(c_dy, c_dx)) + 90.0
+        elif board_poly_active is not None and ema_ellipse is not None:
+            # 2. Fallback: topmost board vertex cluster
+            n_top = max(3, len(board_poly_active) // 10)
+            top_indices = np.argsort(board_poly_active[:, 1])[:n_top]
+            raw_dx = float(np.mean(board_poly_active[top_indices, 0])) - center_x
+            raw_dy = float(np.mean(board_poly_active[top_indices, 1])) - center_y
+            c_dx, c_dy = perspective_correct_vec(raw_dx, raw_dy, ema_ellipse)
+            angle_offset = math.degrees(math.atan2(c_dy, c_dx)) + 90.0
+
+    # ── Geometric B50 boundary circle (always visible regardless of model detection) ──
+    if center_x is not None and bull_radius is not None and bull_radius > 0:
+        b50_px = max(2, int(round(INNER_BULL_EDGE * bull_radius)))
+        cv2.circle(frame, (int(center_x), int(center_y)), b50_px, (0, 200, 255), 1)
 
     # ── Darts ─────────────────────────────────────────────────────────────────
     # Determine which model is authoritative for darts
@@ -264,7 +482,8 @@ def detect_image(frame, yolo, yolo_pose, dart_cls, bull_cls, board_cls):
                         best_seg_idx = i_seg
 
             if best_seg_idx >= 0 and seg_polys is not None and len(seg_polys[best_seg_idx]) >= 3:
-                pts = seg_polys[best_seg_idx].astype(np.int32)
+                dart_poly = smooth_polygon(seg_polys[best_seg_idx].astype(np.float32), w, h, kernel_size=9)
+                pts = dart_poly.astype(np.int32)
                 overlay = frame.copy()
                 cv2.fillPoly(overlay, [pts], (0, 165, 255))
                 cv2.addWeighted(overlay, 0.4, frame, 0.6, 0, frame)
@@ -273,6 +492,7 @@ def detect_image(frame, yolo, yolo_pose, dart_cls, bull_cls, board_cls):
                 cv2.rectangle(frame, (int(x1), int(y1)), (int(x2), int(y2)), (0, 165, 255), 2)
 
             # Pose keypoints
+            tail_x = tail_y = None
             if dart_source.keypoints is not None and dart_source.keypoints.xy is not None:
                 kpts = dart_source.keypoints.xy[orig_i].cpu().numpy()
                 if len(kpts) >= 2 and not np.allclose(kpts, 0.0):
@@ -280,45 +500,41 @@ def detect_image(frame, yolo, yolo_pose, dart_cls, bull_cls, board_cls):
                     tip_cx, tip_cy = float(pk_tip[0]), float(pk_tip[1])
                     tail_x, tail_y = float(pk_tail[0]), float(pk_tail[1])
                     
-                    # Runtime guard: tip must be closer to the bull center than tail
-                    dist_tip = (tip_cx - center_x) ** 2 + (tip_cy - center_y) ** 2
-                    dist_tail = (tail_x - center_x) ** 2 + (tail_y - center_y) ** 2
-                    if dist_tail < dist_tip:
-                        tip_cx, tip_cy, tail_x, tail_y = tail_x, tail_y, tip_cx, tip_cy
-                        
-                    # Refine pose keypoint
-                    tip_cx, tip_cy = refine_dart_tip(gray, (tip_cx, tip_cy), (tail_x, tail_y), search_px=18)
-                    # Draw pose visualizer (skeleton line)
-                    cv2.line(frame, (int(tail_x), int(tail_y)), (int(tip_cx), int(tip_cy)), (0, 255, 255), 2)
-                    cv2.circle(frame, (int(tail_x), int(tail_y)), 5, (255, 0, 0), -1) # Tail blue
+                    # Snap the pose keypoint to the shaft edge (small window).
+                    tip_cx, tip_cy = refine_dart_tip(gray, (tip_cx, tip_cy), (tail_x, tail_y), search_px=10)
+            
+            # Fallback if pose keypoints are missing/degenerate
+            if tail_x is None:
+                best_seg_idx = -1
+                best_iou = 0.3
+                for i_seg, box_seg in enumerate(results.boxes):
+                    if int(box_seg.cls[0]) == dart_cls:
+                        seg_bbox = box_seg.xyxy[0].tolist()
+                        curr_iou = iou(dart_boxes[k], seg_bbox)
+                        if curr_iou > best_iou:
+                            best_iou = curr_iou
+                            best_seg_idx = i_seg
+
+                if best_seg_idx >= 0 and seg_polys is not None and len(seg_polys[best_seg_idx]) >= 3:
+                    poly = seg_polys[best_seg_idx].astype(np.float32)
+                    (tip_cx, tip_cy), (tail_x, tail_y) = dart_tip_tail_poly(poly)
+                    tip_cx, tip_cy = refine_dart_tip(gray, (tip_cx, tip_cy), (tail_x, tail_y))
+
+            # Draw lines and circles for tip and tail (if tail exists)
+            if tail_x is not None:
+                cv2.line(frame, (int(tail_x), int(tail_y)), (int(tip_cx), int(tip_cy)), (0, 255, 255), 2)
+                cv2.circle(frame, (int(tail_x), int(tail_y)), 5, (255, 0, 0), -1) # Tail blue
         else:
             # Fallback to segmentation polygons
             if seg_polys is not None and len(seg_polys[orig_i]) >= 3:
                 poly = seg_polys[orig_i].astype(np.float32)
-                cx_p = float(np.mean(poly[:, 0]))
-                cy_p = float(np.mean(poly[:, 1]))
-                pts_c = poly - np.array([cx_p, cy_p], dtype=np.float32)
-                _, eigvecs = np.linalg.eigh(np.cov(pts_c.T))
-                major = eigvecs[:, -1]
-                proj = pts_c @ major
-                end_a = poly[int(np.argmin(proj))]
-                end_b = poly[int(np.argmax(proj))]
-                
-                # Choose tip as the endpoint closer to the bullseye
-                dist_a = (end_a[0] - center_x) ** 2 + (end_a[1] - center_y) ** 2
-                dist_b = (end_b[0] - center_x) ** 2 + (end_b[1] - center_y) ** 2
-                if dist_a < dist_b:
-                    tip_cx, tip_cy = float(end_a[0]), float(end_a[1])
-                    tail_x, tail_y = float(end_b[0]), float(end_b[1])
-                else:
-                    tip_cx, tip_cy = float(end_b[0]), float(end_b[1])
-                    tail_x, tail_y = float(end_a[0]), float(end_a[1])
-                    
+                (tip_cx, tip_cy), (tail_x, tail_y) = dart_tip_tail_poly(poly)
                 tip_cx, tip_cy = refine_dart_tip(
                     gray, (tip_cx, tip_cy), (tail_x, tail_y))
                 
                 # Draw filled segmentation polygon
-                pts = seg_polys[orig_i].astype(np.int32)
+                dart_poly = smooth_polygon(seg_polys[orig_i].astype(np.float32), w, h, kernel_size=9)
+                pts = dart_poly.astype(np.int32)
                 overlay = frame.copy()
                 cv2.fillPoly(overlay, [pts], (0, 165, 255))
                 cv2.addWeighted(overlay, 0.4, frame, 0.6, 0, frame)
@@ -346,14 +562,45 @@ def detect_image(frame, yolo, yolo_pose, dart_cls, bull_cls, board_cls):
     if DRAW_RINGS and center_x is not None:
         draw_scoring_rings(frame, center_x, center_y, bull_radius, ema_ellipse, angle_offset)
 
-    # Draw sector-20 direction indicator
-    if ema_ellipse is not None:
-        dir_rad = math.radians(angle_offset - 90.0)
-        line_len = int(bull_radius * 2.5)
-        end_x = int(center_x + line_len * math.cos(dir_rad))
-        end_y = int(center_y + line_len * math.sin(dir_rad))
+    # Draw sector-20 direction indicator — extend to just past the double ring
+    if center_x is not None and center_x > 0:
+        line_len = int(bull_radius * (DOUBLE_OUTER + 1.5))
+        if twenty_cx is not None:
+            raw_dx = twenty_cx - center_x
+            raw_dy = twenty_cy - center_y
+            dist = math.hypot(raw_dx, raw_dy)
+            if dist > 0:
+                vx = raw_dx / dist
+                vy = raw_dy / dist
+            else:
+                vx, vy = 0.0, -1.0
+        else:
+            # Fallback: project the angle_offset through inverse perspective
+            dir_rad = math.radians(angle_offset - 90.0)
+            dx_c = math.cos(dir_rad)
+            dy_c = math.sin(dir_rad)
+            if ema_ellipse is not None:
+                _, _, major, minor, ea = ema_ellipse
+                scale = min(major / max(minor, 1.0), 4.0)
+                ar = math.radians(ea)
+                cos_a, sin_a = math.cos(ar), math.sin(ar)
+                u =  cos_a * dx_c + sin_a * dy_c
+                v = -sin_a * dx_c + cos_a * dy_c
+                v /= scale
+                vx = cos_a * u - sin_a * v
+                vy = sin_a * u + cos_a * v
+                dist = math.hypot(vx, vy)
+                if dist > 0:
+                    vx /= dist
+                    vy /= dist
+            else:
+                vx, vy = dx_c, dy_c
+
+        end_x = int(center_x + line_len * vx)
+        end_y = int(center_y + line_len * vy)
         cv2.line(frame, (int(center_x), int(center_y)), (end_x, end_y), (0, 255, 255), 2)
-        cv2.putText(frame, '20', (end_x + 4, end_y + 4),
+        cv2.circle(frame, (end_x, end_y), 6, (0, 255, 255), 2)
+        cv2.putText(frame, '20', (end_x + 8, end_y + 5),
                     cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 255, 255), 2)
 
     return frame, labels, total
@@ -364,9 +611,14 @@ def main():
     ap.add_argument('--image', default='', help='Path to a specific test image')
     ap.add_argument('--all', action='store_true', help='Test every image in data/images/')
     ap.add_argument('--model', default=DEFAULT_MODEL)
-    ap.add_argument('--rings', action='store_true',
-                    help='Overlay the regulation scoring rings on the image for visual debugging')
+    ap.add_argument('--no-rings', dest='rings', action='store_false',
+                    help='Disable overlaying the regulation scoring rings on the image')
+    ap.set_defaults(rings=True)
     ap.add_argument('--save', default='', help='Optional folder to save annotated images instead of showing them')
+    ap.add_argument('--angle-offset', type=float, default=0.0,
+                    help="Rotation offset (degrees) to apply to sector lines. Align '20' sector at top.")
+    ap.add_argument('--disable-auto-rotation', action='store_true',
+                    help="Disable automatic calculation of angle offset from the board polygon/class.")
     args = ap.parse_args()
 
     global DRAW_RINGS
@@ -376,13 +628,22 @@ def main():
         sys.exit(f"ERROR: model not found: {args.model}")
 
     yolo = YOLO(args.model)
-    name_to_id = {v: k for k, v in yolo.names.items()}
-    bull_cls = name_to_id.get('bull', name_to_id.get('bulls'))
-    dart_cls = name_to_id.get('dart', name_to_id.get('darts',
-               name_to_id.get('arrow', name_to_id.get('arrows'))))
-    board_cls = name_to_id.get('board', name_to_id.get('boards'))
+    # Resolve by name so the old 3-class export and the new Darts.yolo26 5-class
+    # export ('The 25/50-point circle','arrow','dartboard','twenty') both work.
+    names = yolo.names
+    bull_cls = resolve_class(names, 'bull', 'bulls', contains=['25'])
+    bull50_cls = resolve_class(names, 'bull50', 'inner_bull', contains=['50'])
+    dart_cls = resolve_class(names, 'dart', 'darts', 'arrow', 'arrows')
+    board_cls = resolve_class(names, 'board', 'boards', 'dartboard', contains=['board'])
     if bull_cls is None or dart_cls is None:
-        sys.exit(f"ERROR: model must have bull and dart classes. Found: {list(yolo.names.values())}")
+        sys.exit(f"ERROR: model must have bull and dart classes. Found: {list(names.values())}")
+    if bull50_cls is not None:
+        print(f"INFO: 50-point inner bull class found (id={bull50_cls}, name='{names[bull50_cls]}')")
+
+    sector_20_cls = resolve_class(names, '20', 'twenty', 'sector20', 'sector_20',
+                                  contains=['twenty', 'sector20', 'sector_20'])
+    if sector_20_cls is not None:
+        print(f"INFO: sector-20 class found (id={sector_20_cls}, name='{names[sector_20_cls]}') — auto-rotation will align to it.")
 
     # Load Pose model if available for hybrid tracking
     yolo_pose = None
@@ -421,7 +682,11 @@ def main():
             if frame is None:
                 print(f"  SKIP (unreadable): {path}")
                 continue
-            out, labels, total = detect_image(frame, yolo, yolo_pose, dart_cls, bull_cls, board_cls)
+            out, labels, total = detect_image(frame, yolo, yolo_pose, dart_cls, bull_cls, board_cls,
+                                              sector_20_cls=sector_20_cls,
+                                              angle_offset_fallback=args.angle_offset,
+                                              disable_auto_rotation=args.disable_auto_rotation,
+                                              bull50_cls=bull50_cls)
             print(f"  {path.name:40s}  darts={labels}  total={total}")
             cv2.imwrite(str(save_dir / path.name), out)
     else:
@@ -446,7 +711,11 @@ def main():
 
             if show_annotations:
                 annotated_frame = frame.copy()
-                out, labels, total = detect_image(annotated_frame, yolo, yolo_pose, dart_cls, bull_cls, board_cls)
+                out, labels, total = detect_image(annotated_frame, yolo, yolo_pose, dart_cls, bull_cls, board_cls,
+                                                  sector_20_cls=sector_20_cls,
+                                                  angle_offset_fallback=args.angle_offset,
+                                                  disable_auto_rotation=args.disable_auto_rotation,
+                                                  bull50_cls=bull50_cls)
                 if idx != last_idx or show_annotations != last_show_annotations:
                     print(f"  {path.name:40s}  darts={labels}  total={total}")
                 cv2.imshow('Darts Test', out)
