@@ -25,7 +25,6 @@ That makes the result interpretable and easy to debug.
 9. [Main scripts reference](#main-scripts-reference)
 10. [scratch/ — developer debug scripts](#scratch--developer-debug-scripts)
 11. [Troubleshooting](#troubleshooting)
-12. [License](#license)
 
 ---
 
@@ -272,9 +271,7 @@ and `test/` splits are missing, the training script creates them automatically.
 
 ## Re-training the models
 
-There are **two** models. Retrain the segmentation model whenever you change
-classes or add board imagery; regenerate + retrain the pose model whenever the
-segmentation labels change (the pose labels are derived from them).
+There are **two** models. Retrain the segmentation model whenever you change classes or add board imagery; regenerate + retrain the pose model whenever the segmentation labels change (the pose labels are derived from them).
 
 ### A. Segmentation model (board, bull, rings, dart)
 
@@ -282,48 +279,17 @@ segmentation labels change (the pose labels are derived from them).
 python yolo_training.py --dataset darts_dataset --epochs 150
 ```
 
-What it does:
-1. Reads class names from the dataset's `data.yaml`.
-2. Auto‑splits `train/` into `train`/`valid`/`test` (defaults 15 % / 10 %) if those
-   splits are missing.
-3. Rewrites a normalized `data.yaml` with absolute paths.
-4. Trains YOLO11‑seg with augmentations tuned for ~300–500 images.
-5. Copies the best checkpoint to **`models/yolo/best.pt`** (where inference looks).
+### B. Pose model (dart tip + tail)
 
-Common overrides: `--model yolo11s-seg.pt` (larger/more accurate),
-`--epochs 300`, `--imgsz 1024`, `--batch 8`, `--device 0` (force GPU 0),
-`--device cpu`.
-
-### B. Pose model (dart tip + tail) — two steps
-
-**Step 1 — convert the segmentation dataset to a pose dataset.** This derives a
-2‑keypoint (tip, tail) label for every `arrow` polygon, using PCA major‑axis
-endpoints with a width cue (the wider end is the flight/tail, the narrower end is
-the tip — the same routine inference trusts):
-
+**Step 1: Convert segmentation dataset to pose dataset**
 ```bash
 python convert_seg_to_pose.py --src darts_dataset --dst darts_pose_dataset
 ```
 
-**Step 2 — train the pose model:**
-
+**Step 2: Train pose model**
 ```bash
 python yolo_pose_training.py --dataset darts_pose_dataset --epochs 100
 ```
-
-It trains YOLO11‑pose at `imgsz=960` (dart tips are tiny; high resolution matters)
-with perspective augmentation, and copies the best checkpoint to
-**`models/yolo/pose_best.pt`**.
-
-> ⚠️ **Always regenerate the pose dataset (Step 1) after re‑annotating**, then
-> retrain (Step 2). The pose model's tip accuracy is capped by its labels, and the
-> labels come from the segmentation polygons.
-
-### Base checkpoints
-
-Training starts from the standard Ultralytics base checkpoints
-(`yolo11n-seg.pt`, `yolo11n-pose.pt`). These are gitignored and download
-automatically on first use; you can also drop them in the repo root.
 
 ---
 
@@ -435,13 +401,3 @@ behind each is preserved.
 | Tip lands on the wrong side of a double/triple line | Retrain the pose model after regenerating `darts_pose_dataset` (Step B above). |
 | Slow on CPU | Expected; use a CUDA GPU and pass `--device 0`. |
 | `darts_dataset/` got committed | It's gitignored now; if previously tracked, run `git rm -r --cached darts_dataset`. |
-
----
-
-## License
-
-[MIT](LICENSE) © 2026 Rares Gherasa.
-
-Dartboard geometry constants follow regulation board dimensions. YOLO models are
-trained with [Ultralytics](https://github.com/ultralytics/ultralytics) (AGPL‑3.0 —
-review their license terms if you redistribute trained weights commercially).
