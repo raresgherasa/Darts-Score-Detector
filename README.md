@@ -85,10 +85,6 @@ pip install -r requirements.txt
 ```
 
 
-The two trained model weights (`models/yolo/best.pt` and `models/yolo/pose_best.pt`)
-**ship with the repository**, so inference works immediately after install — no
-training required to try it.
-
 ---
 
 ## Running it / "playing"
@@ -117,11 +113,6 @@ python darts_score_detection_offline.py --input "rtsp://user:pass@host:554/strea
 # Write an annotated output video
 python darts_score_detection_offline.py --input game.mp4 --output output_game.mp4
 ```
-
-**On‑screen display.** Each dart is boxed and labelled with its score
-(`score: T20`); the running round total is shown top‑left (`total: 60`); the
-detected bull, 50‑bull, and double‑20 arc are boxed with confidences; the "20"
-sector direction is drawn as a line.
 
 **Controls (live/video window):**
 | Key | Action |
