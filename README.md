@@ -18,13 +18,10 @@ That makes the result interpretable and easy to debug.
 2. [Technology stack](#technology-stack)
 3. [Installation](#installation)
 4. [Running it / "playing"](#running-it--playing)
-5. [The dartboard scoring model](#the-dartboard-scoring-model)
-6. [Annotating images in Roboflow](#annotating-images-in-roboflow)
-7. [Re-training the models](#re-training-the-models)
-8. [Project layout](#project-layout)
-9. [Main scripts reference](#main-scripts-reference)
-10. [scratch/ — developer debug scripts](#scratch--developer-debug-scripts)
-11. [Troubleshooting](#troubleshooting)
+5. [Annotating images in Roboflow](#annotating-images-in-roboflow)
+6. [Re-training the models](#re-training-the-models)
+7. [Project layout](#project-layout)
+8. [Main scripts reference](#main-scripts-reference)
 
 ---
 
@@ -67,14 +64,7 @@ The pipeline is a **dual‑model hybrid** plus a deterministic geometric scorer:
   masks localise poorly. If no pose weights are present, the detector falls back
   to estimating the tip from the segmentation polygon (`dart_tip_tail_poly`).
 
-**Geometric robustness.** A camera never sees the board perfectly face‑on, so the
-board appears as an ellipse. The detector fits that ellipse, builds a **projective
-homography** that rectifies the board plane to a true circle, and measures every
-dart in that rectified metric space. This is what keeps the thin double/triple
-bands at the rim accurate. (An affine fallback is used if the homography is
-rejected as implausible.) Bull centre, radius, board ellipse, and rotation are
-**EMA‑smoothed across frames** for stability on video, and per‑dart scores use a
-**temporal majority vote** over a short track.
+**Geometric correction:** Since a camera is rarely perfectly aligned, the board looks like an oval (ellipse). The detector fixes this tilt, converting it back to a flat circle to ensure dart scoring (especially near the edge rings) is highly accurate. It also smooths out camera jitter across frames and votes on the final score to ensure video stability.
 
 ---
 
@@ -112,10 +102,6 @@ source .venv/bin/activate          # Windows: .venv\Scripts\activate
 pip install -r requirements.txt
 ```
 
-`requirements.txt` pins `ultralytics`, `opencv-python`, `numpy`, and `pyyaml`.
-Installing `ultralytics` automatically pulls a compatible `torch`/`torchvision`.
-For an explicit CUDA build, install the matching torch wheel from
-<https://pytorch.org> **before** `pip install -r requirements.txt`.
 
 The two trained model weights (`models/yolo/best.pt` and `models/yolo/pose_best.pt`)
 **ship with the repository**, so inference works immediately after install — no
@@ -191,31 +177,7 @@ python test.py --all --save out_dir/    # headless: write annotated images inste
 python test.py --all --no-rings         # hide the scoring-ring overlay
 ```
 
----
 
-## The dartboard scoring model
-
-All distances are expressed in **OuterBull‑radius units** (the outer‑bull radius =
-15.9 mm = `1.0`). Regulation radii (from `darts_score_detection_offline.py`):
-
-| Zone | Radius range (bull‑radius units) | Result |
-|------|----------------------------------|--------|
-| Inner bull (B50) | `r < 0.399` | `B50` = 50 |
-| Outer bull (B25) | `0.399 ≤ r ≤ 1.0` | `B25` = 25 |
-| Single (inner) | `1.0 < r < 6.226` | `S<n>` = n |
-| Triple | `6.226 ≤ r ≤ 6.730` | `T<n>` = 3·n |
-| Single (outer) | `6.730 < r < 10.189` | `S<n>` = n |
-| Double | `10.189 ≤ r ≤ 10.692` | `D<n>` = 2·n |
-| Outside | `r > 10.692` | `Miss` = 0 |
-
-The sector number `n` comes from the angle, walking clockwise from "20" at top:
-
-```
-SECTORS = [20, 1, 18, 4, 13, 6, 10, 15, 2, 17, 3, 19, 7, 16, 8, 11, 14, 9, 12, 5]
-```
-
-Each sector spans 18°. The board's true rotation is detected automatically from
-the **double‑20 arc** class; `--angle-offset` overrides/assists this if needed.
 
 ---
 
@@ -303,16 +265,10 @@ Darts Score/
 ├── convert_seg_to_pose.py             # seg dataset → 2-keypoint pose dataset
 ├── yolo_pose_training.py              # train YOLO11-pose → models/yolo/pose_best.pt
 ├── requirements.txt
-├── LICENSE                            # MIT
 ├── README.md
-├── models/yolo/
-│   ├── best.pt                        # trained segmentation weights  (tracked)
-│   └── pose_best.pt                   # trained pose weights          (tracked)
-├── darts_dataset/                     # Roboflow seg export            (gitignored)
-├── darts_pose_dataset/                # converted pose dataset         (gitignored)
-├── data/images/                       # captured frames                (gitignored)
-├── runs/                              # YOLO training outputs           (gitignored)
-└── scratch/                           # one-off debug scripts (gitignored; see below)
+└── models/yolo/
+    ├── best.pt                        # trained segmentation weights
+    └── pose_best.pt                   # trained pose weights
 ```
 
 ---
@@ -327,77 +283,4 @@ Darts Score/
 | `convert_seg_to_pose.py` | Turn seg polygons into pose keypoints. | `dart_tip_tail` (PCA + width tip/tail), `dart_tip_from_endpoints`, `resolve_dart_class`. |
 | `yolo_pose_training.py` | Train the pose model. | `main` (auto‑adds `flip_idx`). |
 
----
 
-## scratch/ — developer debug scripts
-
-`scratch/` holds throwaway, single‑purpose scripts written while debugging the
-geometry and dataset. **They are gitignored** (kept locally, not published) and
-are not needed to run, train, or annotate. They are documented here so the intent
-behind each is preserved.
-
-> ⚠️ Many hardcode local image paths / old class assumptions. Treat them as a lab
-> notebook, not maintained tooling.
-
-**Scoring / geometry verification**
-| Script | What it checks |
-|--------|----------------|
-| `check_calculation.py` | Replicates `test.py`'s geometry to verify a score by hand. |
-| `analyze_images.py` | Prints the computed ring radii (`TRIPLE_INNER`, `TRIPLE_OUTER`, …). |
-| `test_homography_scoring.py` | Synthetic validation of the projective rectifier vs the affine model (tilted‑board accuracy). |
-| `test_decision_logic.py` | Exercises the bull‑centre choice logic on flagged large‑shift cases. |
-| `find_doubles.py` | Lists images where a dart lands in a double ring, with its radius ratio. |
-| `find_s5.py` | Finds darts scored in sector 5 (angle/rotation sanity check). |
-| `count_swaps.py` | Counts how often tip/tail disambiguation flips vs the old method. |
-
-**Bull / board centre + alignment**
-| Script | What it checks |
-|--------|----------------|
-| `check_centers.py` / `check_centers_all.py` | Compares board‑ vs bull‑derived centres across images. |
-| `check_alignment.py` / `debug_alignment.py` | Inspects detection boxes and board/bull alignment. |
-| `locate_physical_bull.py` / `locate_physical_bull_794298.py` | Locates the true physical bull on specific frames. |
-| `inspect_bull_poly.py` | Dumps the bull polygon/box and confidence. |
-| `analyze_board_poly.py` | Reports the board polygon vertex count/shape. |
-
-**Ring / ratio measurement (constant calibration)**
-| Script | What it checks |
-|--------|----------------|
-| `measure_dataset_ratios.py` / `check_dataset_ratios.py` | Measures bull/triple/double radius ratios across the dataset. |
-| `check_board_bull_ratio.py` | Per‑image board‑major / bull‑major radius ratio. |
-| `measure_physical_rings.py` / `measure_one_image.py` | Measures physical ring radii on one or many images. |
-
-**Mask / moments / polygon experiments**
-| Script | What it checks |
-|--------|----------------|
-| `test_moments.py` / `test_real_moments.py` / `test_mask_moments.py` / `test_mask_moments_all.py` | Compare `cv2.moments` centroids vs polygon means for the bull centre. |
-| `analyze_gradient.py` | Inspects the intensity gradient used by `refine_dart_tip`. |
-| `test_refinement.py` / `test_refinement_correct_orientation.py` | Validate `refine_dart_tip` snapping/no‑drift behaviour. |
-
-**Dart tip / pose**
-| Script | What it checks |
-|--------|----------------|
-| `test_pose.py` | Runs the pose model and prints predicted boxes/keypoints. |
-| `verify_dart_positions.py` | Prints each dart's predicted tip coordinates. |
-| `check_dart3.py` | Focused check on a particular dart/bull‑centre case. |
-
-**Detection / image inspection**
-| Script | What it checks |
-|--------|----------------|
-| `inspect_detections.py` | Dumps raw detections for a few `data/images/` frames. |
-| `inspect_image_darts.py` | Loads an image and inspects detected darts. |
-| `test_single_image.py` | End‑to‑end detection on one image. |
-| `find_dots.py` | Detects bull/centre dots on a frame. |
-| `list_red_regions.py` | Lists red regions (double/triple ring colour) in an image. |
-
----
-
-## Troubleshooting
-
-| Symptom | Fix |
-|---------|-----|
-| `YOLO weights missing: models/yolo/best.pt` | The weights ship with the repo; if absent, train with `yolo_training.py`. |
-| `Failed to open input` on a webcam | The script prints available `/dev/video*` indices — pass the right `--input N`. |
-| Sector numbers are rotated/wrong | The board roll isn't auto‑detected — set `--angle-offset DEG` (or check the `twenty` class is being detected). |
-| Tip lands on the wrong side of a double/triple line | Retrain the pose model after regenerating `darts_pose_dataset` (Step B above). |
-| Slow on CPU | Expected; use a CUDA GPU and pass `--device 0`. |
-| `darts_dataset/` got committed | It's gitignored now; if previously tracked, run `git rm -r --cached darts_dataset`. |
