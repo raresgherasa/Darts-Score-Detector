@@ -88,11 +88,11 @@ def write_normalized_yaml(dataset_dir: Path, names: list[str]) -> Path:
 
 def main():
     p = argparse.ArgumentParser()
-    p.add_argument('--dataset', default='yolov11 dataset',
+    p.add_argument('--dataset', default='darts_dataset',
                    help="Path to unzipped Roboflow dataset")
     p.add_argument('--model', default='yolo11n-seg.pt',
                    help="Base model (yolo11n-seg.pt / yolo11s-seg.pt / yolo11m-seg.pt)")
-    p.add_argument('--epochs', type=int, default=150)
+    p.add_argument('--epochs', type=int, default=100)
     p.add_argument('--imgsz', type=int, default=640)
     p.add_argument('--batch', type=int, default=4,
                    help="Batch size — keep ≤4 for 4 GB VRAM (RTX 3050 Laptop)")
