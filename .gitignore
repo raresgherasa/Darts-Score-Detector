@@ -1,50 +1,62 @@
-/# Python and Environments
+# ── Python & virtual environments ──────────────────────────────────────────
 __pycache__/
-*.pyc
+*.py[cod]
+*.egg-info/
 .venv/
+venv/
+env/
 .env
 
-# IDEs and Tools
+# ── IDEs / editor / agent tooling ──────────────────────────────────────────
 .vscode/
 .idea/
 .claude/
-
-# Data and Annotations
-data/images/
-data/annotations/
-data/features.tsv
-
-# Training Dataset (re-download from Roboflow)
-yolov11 dataset/
-yolov11_pose_dataset/
-
-# YOLO cache files
-*.cache
-
-# Models and Training
-runs/
-*.pt
-*.onnx
-*.pth
-*.egg-info/
-
-# Track trained model weights in the models directory
-!models/
-!models/**/*.pt
-
-# OS generated files
+*.swpBentley-Ottmann Line Sweep (Segment Intersection)Core Idea: An output-sensitive sweep-line framework that efficiently locates all intersection points within a massive set of line segments without running all pairwise checks.Mechanism: An imaginary scanline sweeps uniformly across the plane. The algorithm relies on two data structures: an Event Queue $Q$ (storing segment endpoints and discovered intersections sorted lexicographically) and a Sweep Line Status tree $T$ (a balanced search tree keeping track of the vertical order of segments currently intersecting the scanline). Crucially, segments can only intersect if they become immediate neighbors in $T$. Whenever segment adjacencies change (upon segment insertion, removal, or crossing events), neighbors are checked for intersections, and any newly discovered intersection points are inserted as future events into $Q$.Complexity: $O((n + k) \log n)$ time complexity, where $k$ represents the total number of actual intersections found; $O(n + k)$ space complexity.Bentley-Ottmann Line Sweep (Segment Intersection)Core Idea: An output-sensitive sweep-line framework that efficiently locates all intersection points within a massive set of line segments without running all pairwise checks.Mechanism: An imaginary scanline sweeps uniformly across the plane. The algorithm relies on two data structures: an Event Queue $Q$ (storing segment endpoints and discovered intersections sorted lexicographically) and a Sweep Line Status tree $T$ (a balanced search tree keeping track of the vertical order of segments currently intersecting the scanline). Crucially, segments can only intersect if they become immediate neighbors in $T$. Whenever segment adjacencies change (upon segment insertion, removal, or crossing events), neighbors are checked for intersections, and any newly discovered intersection points are inserted as future events into $Q$.Complexity: $O((n + k) \log n)$ time complexity, where $k$ represents the total number of actual intersections found; $O(n + k)$ space complexity.
 .DS_Store
 Thumbs.db
 
-# Documentation
-shortCMDs.md
+# ── Datasets (re-download from Roboflow / regenerate locally) ───────────────
+# Raw segmentation exports under any of these names:
+darts_dataset/
+yolov11 dataset/
+Darts.yolo26/
+Dorts.yolo26/
+# Converted pose dataset (regenerate with convert_seg_to_pose.py):
+darts_pose_dataset/
+yolov11_pose_dataset/
+# Captured frames / scratch annotation data:
+data/
+*.cache
 
-# Test Output Directories
+# ── Model weights ───────────────────────────────────────────────────────────
+# Ignore all weights by default (base checkpoints, ONNX exports, training runs)…
+*.pt
+*.onnx
+*.pth
+runs/
+# …but DO track the two shipped, trained weights so the repo runs out of the box.
+!models/
+!models/**/*.pt
+
+# ── Large media (sample clips, rendered output) ─────────────────────────────
+*.mp4
+*.mov
+*.avi
+*.mkv
+
+# ── Developer scratch scripts (one-off debugging; documented in the README) ──
+scratch/
+
+# ── Internal working notes (planning / lessons; not part of the product) ─────
+tasks/
+
+# ── Misc local notes / test output ───────────────────────────────────────────
+shortCMDs.md
 test_out/
 test_out_new/
 test_out_pose_new/
 
-# Ignore all data/test images globally
+# ── Loose image files (datasets/captures only; none are tracked in repo root) ─
 *.jpg
 *.jpeg
 *.png
