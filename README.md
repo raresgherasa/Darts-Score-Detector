@@ -15,11 +15,10 @@ This math-based approach makes the scoring highly reliable, transparent, and eas
 
 1. [How it works (architecture)](#how-it-works-architecture)
 2. [Installation](#installation)
-3. [Running it / "playing"](#running-it--playing)
+3. [Running it](#running-it)
 4. [Annotating images in Roboflow](#annotating-images-in-roboflow)
 5. [Re-training the models](#re-training-the-models)
-6. [Project layout](#project-layout)
-7. [Technology stack](#technology-stack)
+6. [Technology stack](#technology-stack)
 
 ---
 
@@ -86,7 +85,7 @@ pip install -r requirements.txt
 
 ---
 
-## Running it / "playing"
+## Running it
 
 Entry point: **`darts_score_detection_offline.py`**.
 
@@ -119,22 +118,7 @@ python darts_score_detection_offline.py --input game.mp4 --output output_game.mp
 | `q` | quit |
 | `SPACE` | (with `--capture`) save the current **raw** frame to `data/images/` for re‑annotation |
 
-**Useful flags:**
-| Flag | Default | Purpose |
-|------|---------|---------|
-| `--yolo-model` | `models/yolo/best.pt` | segmentation weights |
-| `--yolo-pose` | `models/yolo/pose_best.pt` | pose (tip) weights; falls back to seg polygons if missing |
-| `--conf` | `0.35` | YOLO confidence threshold |
-| `--angle-offset DEG` | `0.0` | manually rotate the scoring frame so "20" is at top |
-| `--disable-auto-rotation` | off | stop auto‑aligning to the detected double‑20 arc |
-| `--output FILE.mp4` | — | write annotated video |
-| `--capture` | off | enable `SPACE` to save raw frames into `--capture-dir` |
-| `--capture-dir DIR` | `data/images` | where captured frames go |
-| `--raw-view` | off | show the unannotated feed |
 
-> **Tip — capturing training data.** Run with `--capture` on your real camera,
-> press `SPACE` whenever the board/darts look good, and the raw frames land in
-> `data/images/`. Upload those to Roboflow to grow your dataset.
 
 ### Quick image smoke‑test
 
@@ -226,23 +210,7 @@ python convert_seg_to_pose.py --src darts_dataset --dst darts_pose_dataset
 python yolo_pose_training.py --dataset darts_pose_dataset --epochs 100
 ```
 
----
 
-## Project layout
-
-```
-Darts Score/
-├── darts_score_detection_offline.py   # ▶ main inference entry point (live/video/image/RTSP)
-├── test.py                            # still-image smoke test + ring overlay
-├── yolo_training.py                   # train YOLO11-seg  → models/yolo/best.pt
-├── convert_seg_to_pose.py             # seg dataset → 2-keypoint pose dataset
-├── yolo_pose_training.py              # train YOLO11-pose → models/yolo/pose_best.pt
-├── requirements.txt
-├── README.md
-└── models/yolo/
-    ├── best.pt                        # trained segmentation weights
-    └── pose_best.pt                   # trained pose weights
-```
 
 ---
 
