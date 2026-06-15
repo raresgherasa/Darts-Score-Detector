@@ -1,14 +1,13 @@
 # 🎯 Darts Score Detector
 
-Automatically reads a dartboard from a camera, webcam, RTSP stream, video file, or
-still image and **scores every dart** in standard darts notation — `S20`, `T17`,
-`D5`, `B25` (outer bull), `B50` (inner bull), or `Miss`.
+This project automatically detects and scores darts in real-time from any camera feed, webcam, video, or still image. It outputs scores in standard notation like `S20`, `T17`, `D5`, `B25` (outer bull), `B50` (inner bull), or `Miss`.
 
-The scoring is **fully deterministic geometry**: there is no "score classifier"
-neural net. Two YOLO models only *locate* things on the board (the bull, the
-rings, and each dart tip); a regulation‑dartboard model then converts every dart
-tip's `(distance, angle)` relative to the bull into a score with a lookup table.
-That makes the result interpretable and easy to debug.
+### How it scores
+Instead of using a complex neural network to guess the scores, this tool uses a simple two-step approach:
+1. **YOLO models** locate the board, the bullseye rings, and each dart tip on the screen.
+2. **Standard geometry** calculates the exact distance and angle of the dart tip relative to the bullseye, checking a lookup table to get the score.
+
+This math-based approach makes the scoring highly reliable, transparent, and easy to debug.
 
 ---
 
