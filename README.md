@@ -15,13 +15,12 @@ That makes the result interpretable and easy to debug.
 ## Table of contents
 
 1. [How it works (architecture)](#how-it-works-architecture)
-2. [Technology stack](#technology-stack)
-3. [Installation](#installation)
-4. [Running it / "playing"](#running-it--playing)
-5. [Annotating images in Roboflow](#annotating-images-in-roboflow)
-6. [Re-training the models](#re-training-the-models)
-7. [Project layout](#project-layout)
-8. [Main scripts reference](#main-scripts-reference)
+2. [Installation](#installation)
+3. [Running it / "playing"](#running-it--playing)
+4. [Annotating images in Roboflow](#annotating-images-in-roboflow)
+5. [Re-training the models](#re-training-the-models)
+6. [Project layout](#project-layout)
+7. [Technology stack](#technology-stack)
 
 ---
 
@@ -66,24 +65,7 @@ The pipeline is a **dual‑model hybrid** plus a deterministic geometric scorer:
 
 **Geometric correction:** Since a camera is rarely perfectly aligned, the board looks like an oval (ellipse). The detector fixes this tilt, converting it back to a flat circle to ensure dart scoring (especially near the edge rings) is highly accurate. It also smooths out camera jitter across frames and votes on the final score to ensure video stability.
 
----
 
-## Technology stack
-
-| Component | Choice | Notes |
-|-----------|--------|-------|
-| Language | **Python 3.12** | tested on 3.12.3 |
-| Object detection / segmentation | **Ultralytics YOLO11‑seg** (`8.4.51`) | board, bull, rings, dart masks |
-| Keypoint detection | **Ultralytics YOLO11‑pose** | dart tip + tail |
-| Deep learning backend | **PyTorch 2.12** (`+cu130`) + torchvision 0.27 | pulled in by Ultralytics; GPU optional |
-| Computer vision | **OpenCV** (`opencv-python 4.10.0.84`) | I/O, ellipse fit, homography, drawing |
-| Numerics | **NumPy 2.1.3** | PCA endpoints, geometry |
-| Config | **PyYAML 6.0.2** | dataset `data.yaml` |
-| Annotation | **Roboflow** | instance‑segmentation labelling + YOLO export |
-
-A CUDA GPU is **optional** — everything runs on CPU, just slower. Training
-realistically wants a GPU (the code defaults target a 4 GB laptop GPU, e.g. an
-RTX 3050, with `batch=4`).
 
 ---
 
@@ -273,14 +255,19 @@ Darts Score/
 
 ---
 
-## Main scripts reference
+## Technology stack
 
-| Script | Purpose | Key functions |
-|--------|---------|---------------|
-| `darts_score_detection_offline.py` | Inference & scoring on any source. | `score_geometric` (zone lookup), `board_rectifier`/`rect_offset`/`rect_to_image` (homography), `perspective_correct_vec` (affine fallback), `dart_tip_tail_poly` + `refine_dart_tip` (tip from polygon), `resolve_class`, `draw_scoring_rings`, `Track`/`nms_indices` (temporal vote), `process()` (per‑frame loop). |
-| `test.py` | Visual smoke test on still images; imports the geometry helpers above so the test path matches production exactly. | `detect_image`, `draw_scoring_rings`. |
-| `yolo_training.py` | Train the segmentation model. | `ensure_split`, `write_normalized_yaml`. |
-| `convert_seg_to_pose.py` | Turn seg polygons into pose keypoints. | `dart_tip_tail` (PCA + width tip/tail), `dart_tip_from_endpoints`, `resolve_dart_class`. |
-| `yolo_pose_training.py` | Train the pose model. | `main` (auto‑adds `flip_idx`). |
+| Component | Choice | Notes |
+|-----------|--------|-------|
+| Language | **Python 3.12** | tested on 3.12.3 |
+| Object detection / segmentation | **Ultralytics YOLO11‑seg** (`8.4.51`) | board, bull, rings, dart masks |
+| Keypoint detection | **Ultralytics YOLO11‑pose** | dart tip + tail |
+| Deep learning backend | **PyTorch 2.12** (`+cu130`) + torchvision 0.27 | pulled in by Ultralytics; GPU optional |
+| Computer vision | **OpenCV** (`opencv-python 4.10.0.84`) | I/O, ellipse fit, homography, drawing |
+| Numerics | **NumPy 2.1.3** | PCA endpoints, geometry |
+| Config | **PyYAML 6.0.2** | dataset `data.yaml` |
+| Annotation | **Roboflow** | instance‑segmentation labelling + YOLO export |
+
+A CUDA GPU is **optional** — everything runs on CPU, just slower. Training realistically wants a GPU (the code defaults target a 4 GB laptop GPU, e.g. an RTX 3050, with `batch=4`).
 
 
