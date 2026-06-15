@@ -155,8 +155,9 @@ python test.py --all --no-rings         # hide the scoring-ring overlay
 
 ## Annotating images in Roboflow
 
-The segmentation model is trained on **instance‑segmentation polygons** exported
-from [Roboflow](https://roboflow.com).
+The segmentation model is trained on **instance‑segmentation polygons** exported from [Roboflow](https://roboflow.com).
+
+![Roboflow Annotations Example](assets/roboflow_annotations.png)
 
 ### 1. Collect images
 Photograph/clip your real board from the camera angle you'll deploy. Vary dart

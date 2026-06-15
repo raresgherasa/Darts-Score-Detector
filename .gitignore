@@ -62,3 +62,7 @@ test_out_pose_new/
 *.png
 *.bmp
 *.webp
+
+# ── Allow assets for documentation ──────────────────────────────────────────
+!assets/
+!assets/**/*.png
