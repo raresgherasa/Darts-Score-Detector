@@ -9,7 +9,10 @@ Instead of using a complex neural network to guess the scores, this tool uses a 
 
 This math-based approach makes the scoring highly reliable, transparent, and easy to debug.
 
+
+
 ---
+
 
 ## Table of contents
 
@@ -20,7 +23,10 @@ This math-based approach makes the scoring highly reliable, transparent, and eas
 5. [Re-training the models](#re-training-the-models)
 6. [Technology stack](#technology-stack)
 
+
+
 ---
+
 
 ## How it works (architecture)
 
@@ -67,6 +73,7 @@ The pipeline is a **dual‑model hybrid** plus a deterministic geometric scorer:
 
 ---
 
+
 ## Installation
 
 ```bash
@@ -83,7 +90,9 @@ pip install -r requirements.txt
 ```
 
 
+
 ---
+
 
 ## Running it
 
@@ -137,6 +146,7 @@ python test.py --all --no-rings         # hide the scoring-ring overlay
 
 ---
 
+
 ## Annotating images in Roboflow
 
 The segmentation model is trained on **instance‑segmentation polygons** exported from [Roboflow](https://roboflow.com).
@@ -186,7 +196,10 @@ Unzip so you get `train/images`, `train/labels`, and a `data.yaml`. Name the
 folder `darts_dataset/` (the training default) — it is gitignored. If `valid/`
 and `test/` splits are missing, the training script creates them automatically.
 
+
+
 ---
+
 
 ## Re-training the models
 
@@ -213,6 +226,7 @@ python yolo_pose_training.py --dataset darts_pose_dataset --epochs 100
 
 
 ---
+
 
 ## Technology stack
 
