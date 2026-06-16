@@ -221,9 +221,6 @@ python yolo_pose_training.py --dataset darts_pose_dataset --epochs 100
 | Keypoint detection | **Ultralytics YOLO11‑pose** | dart tip + tail |
 | Deep learning backend | **PyTorch 2.12** (`+cu130`) + torchvision 0.27 | pulled in by Ultralytics; GPU optional |
 | Computer vision | **OpenCV** (`opencv-python 4.10.0.84`) | I/O, ellipse fit, homography, drawing |
-| Numerics | **NumPy 2.1.3** | PCA endpoints, geometry |
-| Config | **PyYAML 6.0.2** | dataset `data.yaml` |
-| Annotation | **Roboflow** | instance‑segmentation labelling + YOLO export |
 
 A CUDA GPU is **optional** — everything runs on CPU, just slower. Training realistically wants a GPU (the code defaults target a 4 GB laptop GPU, e.g. an RTX 3050, with `batch=4`).
 
