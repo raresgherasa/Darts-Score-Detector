@@ -30,6 +30,12 @@ from ultralytics import YOLO
 
 # ── Dartboard geometry (regulation board, distances in OuterBull-radius units) ─
 # OuterBull diameter = 31.8 mm → radius 15.9 mm is our unit.
+# Two kinds of constants live here, and they are changed for different reasons:
+#   • The mm-derived ring radii below (INNER_BULL_EDGE … DOUBLE_OUTER) are fixed
+#     by the regulation board spec — do NOT edit them.
+#   • The three calibration factors immediately following are empirical: they
+#     correct for how a particular dataset's annotations are drawn. Re-measure
+#     them (see scratch/measure_dataset_ratios.py) if you retrain on new labels.
 OUTER_BULL_MM   = 15.9
 DOUBLE_OUTER_MM = 170.0
 # Calibrated geometric constants matching the Roboflow dataset annotation bias:
@@ -713,7 +719,10 @@ def main():
     writer = None
     writer_w = None
     writer_h = None
-    # ACC-9: EMA-smoothed bull center/radius across frames
+    # ACC-9: EMA-smoothed bull center/radius across frames.
+    # Every geometry value below is smoothed with the same exponential moving
+    # average: new = 0.85*old + 0.15*measurement. Raise the 0.85 for steadier but
+    # laggier geometry, lower it to react faster to a moved board/camera.
     ema_cx = None
     ema_cy = None
     ema_r = None
@@ -728,6 +737,31 @@ def main():
     ema_angle_offset = None   # auto-detected board rotation (deg); None → use --angle-offset
 
     def process(frame, use_tracker=True):
+        """Detect, score, annotate and return one frame.
+
+        This is the whole per-frame pipeline. It runs in these stages (each is
+        marked with a matching ── header / numbered comment below):
+
+          A. Run YOLO (segmentation, and Pose if loaded) on the frame.
+          B. Board detection — fit an ellipse to the board polygon. The board is
+             the most reliable reference because it is large and never occluded
+             by darts; its ellipse drives perspective correction and rotation.
+          C. Bull centre & radius — combine the 25-/50-point circles and the
+             "twenty" sector (steps 1–4) into a centre, then derive the scoring
+             unit `bull_radius` from the most trustworthy marker (steps 5–6).
+          D. Rectifier — build a homography that flattens the tilted board so the
+             rings become true circles (falls back to the affine stretch).
+          E. Auto-rotation — find where sector "20" points so labels line up.
+          F. Dart tips — pose keypoints if available, else polygon geometry, then
+             sub-pixel refinement; convert each tip to a (label, score).
+          G. Temporal smoothing — IoU-track darts across frames and majority-vote
+             the label (video only; skipped for single images).
+          H. Draw overlays + write the output video.
+
+        All the EMA (`ema_*`) state persists across calls via `nonlocal`, which is
+        what makes the geometry stable on video. `use_tracker` is False for still
+        images (there is no temporal history to vote over).
+        """
         nonlocal writer, writer_w, writer_h
         nonlocal ema_cx, ema_cy, ema_r
         nonlocal ema_ellipse, ema_angle_offset
@@ -967,7 +1001,10 @@ def main():
                 twenty_cx = (tw_x1 + tw_x2) / 2.0
                 twenty_cy = (tw_y1 + tw_y2) / 2.0
 
-        # Combine center coordinates using bullseye detections
+        # Combine center coordinates using bullseye detections.
+        # The 50-point circle is smaller and concentric with the true centre, so
+        # it gets the larger weight (0.6) when both circles are detected; the
+        # 25-point circle only nudges it (0.4). Either alone is used as-is.
         local_bull_cx = local_bull_cy = None
         if bull50_cx is not None and bull_cx is not None:
             local_bull_cx = 0.6 * bull50_cx + 0.4 * bull_cx
@@ -1117,11 +1154,13 @@ def main():
             draw_scoring_rings(frame, center_x, center_y, bull_radius, ema_ellipse)
 
         # ── Dart detections ────────────────────────────────────────────────
-        # Determine which model is authoritative for darts
+        # Prefer the Pose model when its weights were loaded — its keypoints give
+        # the tip directly. Otherwise read darts off the segmentation results.
         use_pose = (results_pose is not None)
         dart_source = results_pose if use_pose else results
-        
-        # Class ID for dart in the chosen model
+
+        # Dart class id differs per model: the pose dataset is single-class so the
+        # dart is always id 0; the seg model uses the resolved DART_CLS.
         active_dart_cls = 0 if use_pose else DART_CLS
 
         dart_boxes = []
