@@ -24,6 +24,15 @@ import yaml
 
 
 def dart_tip_from_endpoints(poly, end_a, end_b):
+    """Return whichever of the two endpoints is the more acute (the dart tip).
+
+    Tiebreaker used by dart_tip_tail when the width test is inconclusive: a dart
+    tip comes to a sharp point while the flight/tail is blunt, so the endpoint
+    with the smaller interior angle is the tip. `k` controls how many vertices
+    away the angle-forming neighbours are sampled (scales with polygon density).
+    Mirrors the identical helper in darts_score_detection_offline.py so the
+    generated labels and inference agree on tip orientation.
+    """
     n = len(poly)
     k = max(2, n // 12)
     def _angle(ep):
