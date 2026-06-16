@@ -4,7 +4,7 @@ This project automatically detects and scores darts in real-time from any camera
 
 ### How it scores
 Instead of using a complex neural network to guess the scores, this tool uses a simple two-step approach:
-1. **YOLO models** locate the board, the bullseye rings, and each dart tip on the screen.
+1. **YOLO models** locate the board, the bullseye rings, the double-20 segment (used for orientation), and each dart and dart tip on the screen.
 2. **Standard geometry** calculates the exact distance and angle of the dart tip relative to the bullseye, checking a lookup table to get the score.
 
 This math-based approach makes the scoring highly reliable, transparent, and easy to debug.
