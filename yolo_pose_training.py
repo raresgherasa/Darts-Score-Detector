@@ -1,3 +1,20 @@
+"""Train a YOLO11 Pose model that localises each dart's tip and tail.
+
+This is the second half of the two-script pose pipeline:
+  1. convert_seg_to_pose.py turns the segmentation dataset into a 2-keypoint
+     pose dataset (kp0 = tip, kp1 = tail).
+  2. THIS script trains a single-class ('dart') pose model on that output and
+     copies the best weights to `models/yolo/pose_best.pt`, the path the offline
+     detector loads automatically to enable "hybrid" tracking.
+
+Why pose in addition to segmentation: the segmentation polygon's tip is inferred
+geometrically (PCA + width), which drifts when a dart is occluded or curls. A
+pose model learns the tip directly, so the offline detector prefers it when the
+weights are present and falls back to the polygon otherwise.
+
+Example:
+  python yolo_pose_training.py --dataset darts_pose_dataset --epochs 150
+"""
 import argparse
 import shutil
 import sys
