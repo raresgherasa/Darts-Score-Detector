@@ -21,7 +21,7 @@ This math-based approach makes the scoring highly reliable, transparent, and eas
 3. [Running it](#running-it)
 4. [Annotating images in Roboflow](#annotating-images-in-roboflow)
 5. [Re-training the models](#re-training-the-models)
-6. [Technology stack](#technology-stack)
+6. [Tech stack](#tech-stack)
 
 
 
@@ -173,28 +173,12 @@ The code resolves classes **by name** (not index), accepting these labels:
 | `twenty` | the **double‑20 arc band** at the top (not the full wedge) | rotation landmark to put "20" at top |
 | `arrow` | tight polygon tracing each dart, **from flight to tip** | dart, converted to a tip keypoint |
 
-> Class names are matched flexibly (`resolve_class`), so the legacy 3‑class export
-> `arrow` / `board` / `bulls` still works for inference. New datasets should use
-> the 5‑class names above.
-
-**Annotation tips**
-- Trace the **arrow** polygon along the dart's true long axis (flight → barrel →
-  tip). The flight (wide) vs tip (narrow) asymmetry is what lets the converter
-  tell the tip from the tail.
-- Keep polygons tight; avoid stray 1–2 px clicks (those become degenerate labels
-  and are filtered out as annotation noise).
-- The `twenty` class is the thin **double‑20 arc**, not the entire 20 wedge.
-
-### 4. Generate + export
-- Generate a dataset version. (Augmentation can be left to the training script,
-  which already applies mosaic/mixup/copy‑paste/HSV/rotation/etc.)
+### 4. Export
 - Export format: **YOLO11** (or "YOLOv8" segmentation — same `.txt` polygon
   format). Download the zip.
 
 ### 5. Unzip into the repo
-Unzip so you get `train/images`, `train/labels`, and a `data.yaml`. Name the
-folder `darts_dataset/` (the training default) — it is gitignored. If `valid/`
-and `test/` splits are missing, the training script creates them automatically.
+Unzip the folder and name it `darts_dataset/`. If `valid/` and `test/` splits are missing, the training script creates them automatically.
 
 
 
@@ -228,7 +212,7 @@ python yolo_pose_training.py --dataset darts_pose_dataset --epochs 100
 ---
 
 
-## Technology stack
+## Tech stack
 
 | Component | Choice | Notes |
 |-----------|--------|-------|
